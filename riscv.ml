@@ -75,6 +75,7 @@ module Riscv = struct
     else Bil.var reg
 
   (** {2 Instruction semantics}  *)
+  (* TODO: Improve signedness handling *)
 
   let addi r0 r1 r2 = Bil.[
       r0 := !$r1 + !$r2;
@@ -84,12 +85,6 @@ module Riscv = struct
     ]
   let sub r0 r1 r2 = Bil.[
       r0 := !$r1 - !$r2;
-    ]
-  let lui r0 imm = Bil.[
-      r0 := !$imm lsl 12;
-    ]
-  let auipc r0 imm = Bil.[
-      r0 := pc + (imm lsl 12);
     ]
   let _and r0 r1 r2 = Bil.[
       r0 := !$r1 land !$r2;
@@ -253,14 +248,14 @@ module Riscv = struct
     | _ -> Ok [Bil.special (Insn.asm insn)]
 
   let lift_mem mem insn = match Insn.name insn, Insn.ops insn with
-    | "LW", [|r0;r1;offset|] -> r_type load Word Signed r0 r1 offset
-    | "LH", [|r0;r1;offset|] -> r_type load Halfword Signed r0 r1 offset
-    | "LHU", [|r0;r1;offset|] -> r_type load Halfword Unsigned r0 r1 offset
-    | "LB", [|r0;r1;offset|] -> r_type load Byte Signed r0 r1 offset
-    | "LBU", [|r0;r1;offset|] -> r_type load Byte Unsigned r0 r1 offset
-    | "SW", [|r0;r1;offset|] -> r_type store Word r0 r1 offset
-    | "SH", [|r0;r1;offset|] -> r_type store Halfword r0 r1 offset
-    | "SB", [|r0;r1;offset|] -> r_type store Byte r0 r1 offset
+    | "LW", [|r0;r1;offset|] -> r_type load W Signed r0 r1 offset
+    | "LH", [|r0;r1;offset|] -> r_type load H Signed r0 r1 offset
+    | "LHU", [|r0;r1;offset|] -> r_type load H Unsigned r0 r1 offset
+    | "LB", [|r0;r1;offset|] -> r_type load B Signed r0 r1 offset
+    | "LBU", [|r0;r1;offset|] -> r_type load B Unsigned r0 r1 offset
+    | "SW", [|r0;r1;offset|] -> r_type store W r0 r1 offset
+    | "SH", [|r0;r1;offset|] -> r_type store H r0 r1 offset
+    | "SB", [|r0;r1;offset|] -> r_type store B r0 r1 offset
     | _ -> Ok [Bil.special (Insn.asm insn)]
 
     (** Branching instructions *)
@@ -297,7 +292,7 @@ module Riscv = struct
       | None -> [Bil.special (sprintf "unsupported: %s" name)]
       | Some Riscv_insn -> match riscv_ops (Basic.Insn.ops insn) with
         | Error err -> [Bil.special (Error.to_string_hum err)]
-        | Ok ops -> match arm_insn with
+        | Ok ops -> match riscv_insn with
             | #move_insn as op -> lift_move word ops op
             | #mem_insn  as op -> lift_mem  ops op
             | #branch_insn as op -> lift_branch mem ops op

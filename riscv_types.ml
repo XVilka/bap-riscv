@@ -96,13 +96,6 @@ type move_insn = [
   | `AUIPC
 ] [@@deriving bin_io, compare, sexp, enumerate]
 
-(*
-type bits_insn = [
-  | `BFC
-  | `CLZ
-] [@@deriving bin_io, compare, sexp, enumerate]
-*)
-
 type mem_insn = [
   | `LW
   | `LH
