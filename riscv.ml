@@ -58,9 +58,8 @@ module Riscv = struct
     | Op.Reg reg ->
       let name = Reg.name reg in
       match CPU.reg_of_name name with
-      | None -> invalid_argf "unknown register %s" name ()
-      | Some reg -> Ok reg
-
+        | None -> invalid_argf "unknown register %s" name ()
+        | Some reg -> Ok reg
 
   (** [r_type f d s t] uses lifter [f] for an r-type instruction with
       arguments [d], [s], and [t]. TODO: add shift, and the rest.  *)
@@ -74,7 +73,6 @@ module Riscv = struct
     if Var.equal reg CPU.zero
     then Bil.int (Word.zero 32)
     else Bil.var reg
-
 
   (** {2 Instruction semantics}  *)
 
@@ -166,6 +164,11 @@ module Riscv = struct
         let n = if size = B then 8 else 16 in
         [Bil.move temp Bil.(cast low n (var rs))]
       | W | D -> [] in
+    let typ = match size with
+      | B -> `r8
+      | H -> `r16
+      | W | D -> `r32 in
+    let store m n v = Bil.(store m n v LittleEndian typ) in
     let stores =
       let m = Env.mem in
       let v = Bil.var m in
@@ -175,11 +178,54 @@ module Riscv = struct
         ]
         | B | H -> [
           Bil.move m (store v address Bil.(var temp));
-        ] in
+        ]
     List.concat [
       trunc;                   (* truncate the value if necessary *)
       stores;
     ]
+
+  (* TODO: handle also read/write from R0 (zero) register *)
+  (* TODO: handle also immediate *)
+  (* TODO: do CSR registers size varies? *)
+  let csrrw rs rd csr =
+    let temp = tmp reg8_t in
+    let dest = Env.of_reg rd in
+    let rs = Env.of_reg rs |> Bil.var in
+    let csr = Env.of_reg csr |> Bil.var in
+    exec Bil.([
+        assn temp (load (var Env.mem) csr LittleEndian `r8);
+        Env.mem :=
+          store (var Env.mem) csr (extract 7 0 rs) LittleEndian `r8;
+        assn dest (cast unsigned 32 (var temp));
+      ])
+
+  (* TODO: do CSR registers size varies? *)
+  let csrrs rs rd csr =
+    let temp = tmp reg8_t in
+    let dest = Env.of_reg rd in
+    let rs = Env.of_reg rs |> Bil.var in
+    let csr = Env.of_reg csr |> Bil.var in
+    exec Bil.([
+        assn temp (load (var Env.mem) csr LittleEndian `r8);
+        assn dest (cast unsigned 32 (var temp));
+        temp := temp lor rs;
+        Env.mem :=
+          store (var Env.mem) csr (extract 7 0 temp) LittleEndian `r8;
+      ])
+
+  (* TODO: do CSR registers size varies? *)
+  let csrrc rs rd csr =
+    let temp = tmp reg8_t in
+    let dest = Env.of_reg rd in
+    let rs = Env.of_reg rs |> Bil.var in
+    let csr = Env.of_reg csr |> Bil.var in
+    exec Bil.([
+        assn temp (load (var Env.mem) csr LittleEndian `r8);
+        assn dest (cast unsigned 32 (var temp));
+        temp := temp land lnot rs;
+        Env.mem :=
+          store (var Env.mem) csr (extract 7 0 temp) LittleEndian `r8;
+      ])
 
   (** [lift mem insn] dispatches instructions to corresponding lifters. *)
   let lift_move mem insn = match Insn.name insn, Insn.ops insn with
@@ -219,41 +265,7 @@ module Riscv = struct
 
     (** Branching instructions *)
 
-let lift_branch mem ops insn =
-  let addr = Memory.min_addr mem in
-  match insn, ops with
-
-  | `Bcc, [|offset; cond; _|] ->
-    Branch.lift offset ~cond addr
-
-  | `BL, [|offset; cond; _|]
-  | `BL_pred, [|offset; cond; _|] ->
-    Branch.lift offset ~cond ~link:true addr
-
-  | `BX_RET, [|cond; _|] ->
-    Branch.lift (`Reg `LR) ~cond ~x:true addr
-
-  | `BX, [|target|] ->
-    Branch.lift target ~x:true addr
-
-  | `BX_pred, [|target; cond; _|] ->
-    Branch.lift target ~cond ~x:true addr
-
-  | `BLX, [|target|] ->
-    Branch.lift target ~link:true ~x:true addr
-
-  | `BLX_pred, [|target; cond; _|] ->
-    Branch.lift target ~cond ~link:true ~x:true addr
-
-  | `BLXi, [|offset|] ->
-    Branch.lift offset ~link:true ~x:true addr
-
-  | insn,ops ->
-    fail [%here] "ops %s doesn't match branch insn %s"
-      (string_of_ops ops) (Arm_insn.to_string (insn :> insn))
-
-
-  let lift_bra mem insn = match Insn.name insn, Insn.ops insn with
+  let lift_branch mem insn = match Insn.name insn, Insn.ops insn with
     | "Bcc", [|r0;offset;cond|] -> Branch.lift offset ~cond addr
     | "Bcc", [|r0;r1;offset;cond|] -> Branch.lift offset ~cond ~comp:true addr
     | "BEQ", [|r0;r1;addr|] -> Branch.lift `EQ addr
@@ -262,37 +274,33 @@ let lift_branch mem ops insn =
     | "BLT", [|r0;r1;addr|] -> Branch.lift `LT addr
     | "BLTU", [|r0;r1;addr|] -> Branch.lift `LTU addr
     | "BGEU", [|r0;r1;addr|] -> Branch.lift `GEU addr
-
- (*   | "J", [|offset|] -> Branch.lift *)
     | "JAL", [|r0;addr|] -> Branch.lift ~link:true addr
- (*    | "JR", [|r0;|] *)
     | "JALR", [|r0;r2; 0|] -> Branch.lift ~link:true addr
     | "RET", [||] -> r_type ret
     | _ -> Ok [Bil.special (Insn.asm insn)]
 
   let lift_csr mem insn = match Insn.name insn, Insn.ops insn with
-    | "CSRRW", [|r0;r1|] -> r_type csrlift
-    | "CSRRS", [|r0;r1|] -> r_type csrlift
-    | "CSRRC", [|r0;r1|] -> r_type csrlift
-    | "CSRRWI", [|r0;imm|] -> r_type csrlift
-    | "CSRRSI", [|r0;imm|] -> r_type csrlift
-    | "CSRRCI", [|r0;imm|] -> r_type csrlift
+    | "CSRRW", [|r0;r1|] -> r_type csrrw r0 r1
+    | "CSRRS", [|r0;r1|] -> r_type csrrs r0 r1
+    | "CSRRC", [|r0;r1|] -> r_type csrrc r0 r1
+    | "CSRRWI", [|r0;imm|] -> r_type csrrw r0 imm
+    | "CSRRSI", [|r0;imm|] -> r_type csrrs r0 imm
+    | "CSRRCI", [|r0;imm|] -> r_type csrrc r0 imm
     | _ -> Ok [Bil.special (Insn.asm insn)]
 
-
-    let insn_exn mem insn : bil Or_error.t =
-      let name = Basic.Insn.name insn in
-      Memory.(Addr.Int_err.(!$(max_addr mem) - !$(min_addr mem)))
-      >>= Word.to_int >>= fun s -> Size.of_int ((s+1) * 8) >>= fun size ->
-      Memory.get ~scale:(size ) mem >>| fun word ->
-      match Arm_insn.of_basic insn with
+  let insn_exn mem insn : bil Or_error.t =
+    let name = Basic.Insn.name insn in
+    Memory.(Addr.Int_err.(!$(max_addr mem) - !$(min_addr mem)))
+    >>= Word.to_int >>= fun s -> Size.of_int ((s+1) * 8) >>= fun size ->
+    Memory.get ~scale:(size ) mem >>| fun word ->
+    match Arm_insn.of_basic insn with
       | None -> [Bil.special (sprintf "unsupported: %s" name)]
       | Some arm_insn -> match arm_ops (Basic.Insn.ops insn) with
         | Error err -> [Bil.special (Error.to_string_hum err)]
         | Ok ops -> match arm_insn with
             | #move_insn as op -> lift_move word ops op
             | #mem_insn  as op -> lift_mem  ops op
-            | #branch_insn as op -> lift_bra mem ops op
+            | #branch_insn as op -> lift_branch mem ops op
             | #csr_insn as op -> lift_csr ops op
 end
 
