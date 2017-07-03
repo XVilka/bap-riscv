@@ -293,9 +293,9 @@ module Riscv = struct
     Memory.(Addr.Int_err.(!$(max_addr mem) - !$(min_addr mem)))
     >>= Word.to_int >>= fun s -> Size.of_int ((s+1) * 8) >>= fun size ->
     Memory.get ~scale:(size ) mem >>| fun word ->
-    match Arm_insn.of_basic insn with
+    match Riscv_insn.of_basic insn with
       | None -> [Bil.special (sprintf "unsupported: %s" name)]
-      | Some arm_insn -> match arm_ops (Basic.Insn.ops insn) with
+      | Some Riscv_insn -> match riscv_ops (Basic.Insn.ops insn) with
         | Error err -> [Bil.special (Error.to_string_hum err)]
         | Ok ops -> match arm_insn with
             | #move_insn as op -> lift_move word ops op
