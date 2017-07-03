@@ -13,14 +13,6 @@ module Riscv = struct
     let zero = reg "zero"
     let r = regs "r" 31
 
-    (* Core registers are aliased in RISC-V *)
-    let r0 = zero
-    let r1 = ra
-    let r2 = sp
-    let r3 = gp
-    let r4 = tp
-    let r8 = fp
-
     let gprs = Array.concat [
         r;
       [|zero; gp; tp; sp; fp; ra|] ;
@@ -125,8 +117,72 @@ module Riscv = struct
   let ori r0 r1 imm = Bil.[
       r0 := !$r1 lor imm;
     ]
+  let xor r0 r1 imm = Bil.[
+      r0 := !$r1 lxor imm;
+    ]
+  let xori r0 r1 imm = Bil.[
+      r0 := !$r1 lxor imm;
+    ]
+  let lui r0 imm = Bil.[
+      r0 := imm lsl 12;
+  ]
+  (* TODO: How to read from PC here? *)
+  let auipc r0 imm = Bil.[
+      r0 := imm lsl 12;
+  ]
+
+  (* rd - destination register *)
+  let load size sign rd base offset =
+    let address = Bil.(var base + offset) in
+    let temp = match size with
+      | B | H -> tmp reg32_t
+      | _ -> rd in
+    let rhs = cast_of_sign sign 32 Bil.(var temp) in
+    let extend = match size with
+      | B | H -> [Bil.move rd rhs]
+      | W | D -> [] in
+    let typ = match size with
+      | B -> `r8
+      | H -> `r16
+      | W | D -> `r32 in
+    let load  m n = Bil.(load  m n LittleEndian typ) in
+    let loads  =
+        let mem = Bil.var (Env.mem) in
+        if size = Word then [
+            Bil.move rd (load mem address);
+        ] else [
+            assn temp (load mem address);
+        ]
+    List.concat[
+        loads;
+        extend;
+    ]
+
+  (* rs - source register *)
+  let store size rs base offset =
+    (* truncate the value if necessary *)
+    let trunc = match size with
+      | B | H ->
+        let n = if size = B then 8 else 16 in
+        [Bil.move temp Bil.(cast low n (var rs))]
+      | W | D -> [] in
+    let stores =
+      let m = Env.mem in
+      let v = Bil.var m in
+      match size with
+        | D | W -> [
+          Bil.move m (store v address Bil.(var rs));
+        ]
+        | B | H -> [
+          Bil.move m (store v address Bil.(var temp));
+        ] in
+    List.concat [
+      trunc;                   (* truncate the value if necessary *)
+      stores;
+    ]
+
   (** [lift mem insn] dispatches instructions to corresponding lifters. *)
-  let lift_arith mem insn = match Insn.name insn, Insn.ops insn with
+  let lift_move mem insn = match Insn.name insn, Insn.ops insn with
     | "ADD", [|r0;r1|] -> r_type add r0 r1
     | "ADDI", [|r0;r1;r2|] -> r_type addi r0 r1 r2
     | "SLT", [|r0;r1;r2|] -> r_type slt r0 r1 r2
@@ -151,14 +207,14 @@ module Riscv = struct
     | _ -> Ok [Bil.special (Insn.asm insn)]
 
   let lift_mem mem insn = match Insn.name insn, Insn.ops insn with
-    | "LW", [|r0;r1;offset|] -> r_type load word r0 r1 offset
-    | "LH", [|r0;r1;offset|] -> r_type load halfword r0 r1 offset
-    | "LHU", [|r0;r1;offset|] -> r_type load halfword r0 r1 offset
-    | "LB", [|r0;r1;offset|] -> r_type load byte r0 r1 offset
-    | "LBU", [|r0;r1;offset|] -> r_type load byte r0 r1 offset
-    | "SW", [|r0;r1;offset|] -> r_type store word r0 r1 offset
-    | "SH", [|r0;r1;offset|] -> r_type store halfword r0 r1 offset
-    | "SB", [|r0;r1;offset|] -> r_type store byte r0 r1 offset
+    | "LW", [|r0;r1;offset|] -> r_type load Word Signed r0 r1 offset
+    | "LH", [|r0;r1;offset|] -> r_type load Halfword Signed r0 r1 offset
+    | "LHU", [|r0;r1;offset|] -> r_type load Halfword Unsigned r0 r1 offset
+    | "LB", [|r0;r1;offset|] -> r_type load Byte Signed r0 r1 offset
+    | "LBU", [|r0;r1;offset|] -> r_type load Byte Unsigned r0 r1 offset
+    | "SW", [|r0;r1;offset|] -> r_type store Word r0 r1 offset
+    | "SH", [|r0;r1;offset|] -> r_type store Halfword r0 r1 offset
+    | "SB", [|r0;r1;offset|] -> r_type store Byte r0 r1 offset
     | _ -> Ok [Bil.special (Insn.asm insn)]
 
     (** Branching instructions *)
@@ -215,14 +271,29 @@ let lift_branch mem ops insn =
     | _ -> Ok [Bil.special (Insn.asm insn)]
 
   let lift_csr mem insn = match Insn.name insn, Insn.ops insn with
-    | "CSRRW", [|r0;r1|] -> r_type load
-    | "CSRRS", [|r0;r1|] -> r_type 
-    | "CSRRC", [|r0;r1|] -> r_type
-    | "CSRRWI", [|r0;imm|] -> r_type
-    | "CSRRSI", [|r0;imm|] -> r_type
-    | "CSRRCI", [|r0;imm|] -> r_type
+    | "CSRRW", [|r0;r1|] -> r_type csrlift
+    | "CSRRS", [|r0;r1|] -> r_type csrlift
+    | "CSRRC", [|r0;r1|] -> r_type csrlift
+    | "CSRRWI", [|r0;imm|] -> r_type csrlift
+    | "CSRRSI", [|r0;imm|] -> r_type csrlift
+    | "CSRRCI", [|r0;imm|] -> r_type csrlift
     | _ -> Ok [Bil.special (Insn.asm insn)]
 
+
+    let insn_exn mem insn : bil Or_error.t =
+      let name = Basic.Insn.name insn in
+      Memory.(Addr.Int_err.(!$(max_addr mem) - !$(min_addr mem)))
+      >>= Word.to_int >>= fun s -> Size.of_int ((s+1) * 8) >>= fun size ->
+      Memory.get ~scale:(size ) mem >>| fun word ->
+      match Arm_insn.of_basic insn with
+      | None -> [Bil.special (sprintf "unsupported: %s" name)]
+      | Some arm_insn -> match arm_ops (Basic.Insn.ops insn) with
+        | Error err -> [Bil.special (Error.to_string_hum err)]
+        | Ok ops -> match arm_insn with
+            | #move_insn as op -> lift_move word ops op
+            | #mem_insn  as op -> lift_mem  ops op
+            | #branch_insn as op -> lift_bra mem ops op
+            | #csr_insn as op -> lift_csr ops op
 end
 
 let () = register_target `riscv (module Riscv)

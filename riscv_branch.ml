@@ -4,8 +4,6 @@ open Or_error
 
 open Riscv_types
 
-(*module Env = Arm_env*)
-
 let pc_offset = Word.of_int ~width:32
 let word = Word.of_int ~width:32
 

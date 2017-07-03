@@ -145,14 +145,9 @@ type insn = [
 (** Memory access operations *)
 
 (** Types for single-register memory access *)
-type mode_r = Offset | PreIndex | PostIndex
 type sign = Signed | Unsigned
 type operation = Ld | St
 type size = B | H | W | D
-
-(** Types for multiple-register memory access *)
-type mode_m = IA | IB | DA | DB
-type update_m = Update | NoUpdate
 
 (** Types for data movement operations  *)
 type arth = [`ADD | `ADC | `SBC | `RSC | `SUB | `RSB ]
