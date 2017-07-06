@@ -2,7 +2,11 @@ open Core_kernel.Std
 open Bap.Std
 open Or_error.Monad_infix
 
+open Riscv_types
+
 module Insn = Disasm_expert.Basic.Insn
+module Branch = Riscv_branch
+module Env = Risv_env
 
 module Riscv = struct
   (** Defines the register map *)
@@ -17,7 +21,6 @@ module Riscv = struct
         r;
       [|zero; gp; tp; sp; fp; ra|] ;
     ]
-    (* TODO: there are some aliases for those registers - how to solve that? *)
 
     let gpr = Array.to_list gprs |> Var.Set.of_list
 
@@ -46,6 +49,8 @@ module Riscv = struct
     let is_sp v = Var.same v sp
     let is_bp v = Var.same v fp
     let is_mem v = Var.same v mem
+
+    let addr_of_pc m = Addr.(Memory.min_addr m ++ 4)
   end
 
   (** simplify an expression by applying constant folding *)
@@ -119,9 +124,10 @@ module Riscv = struct
   let lui r0 imm = Bil.[
       r0 := imm lsl 12;
   ]
+
   (* TODO: How to read from PC here? *)
   let auipc r0 imm = Bil.[
-      r0 := imm lsl 12;
+      r0 := (imm lsl 12) + pc;
   ]
 
   (* rd - destination register *)
@@ -283,6 +289,15 @@ module Riscv = struct
     | "CSRRCI", [|r0;imm|] -> r_type csrrc r0 imm
     | _ -> Ok [Bil.special (Insn.asm insn)]
 
+  (** Substitute PC with its value  *)
+  let resolve_pc mem = Stmt.map (object(self)
+    inherit Stmt.mapper as super
+    method! map_var var =
+      if Var.(equal var CPU.pc) then
+        Bil.int (CPU.addr_of_pc mem)
+      else super#map_var var
+  end)
+
   let insn_exn mem insn : bil Or_error.t =
     let name = Basic.Insn.name insn in
     Memory.(Addr.Int_err.(!$(max_addr mem) - !$(min_addr mem)))
@@ -297,6 +312,12 @@ module Riscv = struct
             | #mem_insn  as op -> lift_mem  ops op
             | #branch_insn as op -> lift_branch mem ops op
             | #csr_insn as op -> lift_csr ops op
+
+  let lift mem insn =
+    try insn_exn mem insn >>| resolve_pc mem with
+      | Lifting_failed msg -> errorf "%s:%s" (Basic.Insn.name insn) msg
+      | exn -> of_exn exn
+
 end
 
 let () = register_target `riscv (module Riscv)
